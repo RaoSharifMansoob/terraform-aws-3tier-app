@@ -1,0 +1,3 @@
+aws_region        = "us-east-1"
+aws_profile       = "terraform-dev"
+state_bucket_name = "terraform-aws-3tier-app-state-949049116271"

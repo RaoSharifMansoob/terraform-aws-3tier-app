@@ -1,0 +1,27 @@
+
+# Terraform working directories
+**/.terraform/*
+
+# Terraform state files (may contain sensitive information)
+*.tfstate
+*.tfstate.*
+**/terraform.tfstate
+**/terraform.tfstate.*
+
+# Terraform variable files (use example files instead)
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Terraform crash logs
+crash.log
+crash.*.log
+
+# Local CLI configuration
+.terraformrc
+terraform.rc
+
+# Sensitive local environment files
+.env
+.env.*
+!.env.example
