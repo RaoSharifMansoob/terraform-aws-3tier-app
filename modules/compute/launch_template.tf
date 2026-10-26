@@ -1,26 +1,6 @@
-data "aws_ami" "amazon_linux" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-minimal-*-kernel-6.12-x86_64"]
-  }
-
-  filter {
-    name   = "architecture"
-    values = ["x86_64"]
-  }
-
-  filter {
-    name   = "state"
-    values = ["available"]
-  }
-}
-
 resource "aws_launch_template" "app" {
   name_prefix   = "terraform-3tier-${var.environment}-"
-  image_id      = data.aws_ami.amazon_linux.id
+  image_id      = "ami-0b1743fd5dca8aa9b"
   instance_type = var.instance_type
 
   vpc_security_group_ids = [var.app_security_group_id]
@@ -36,7 +16,7 @@ resource "aws_launch_template" "app" {
   }
 
   block_device_mappings {
-    device_name = data.aws_ami.amazon_linux.root_device_name
+    device_name = "/dev/xvda"
 
     ebs {
       volume_size           = 8
@@ -45,45 +25,6 @@ resource "aws_launch_template" "app" {
       delete_on_termination = true
     }
   }
-
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    set -euxo pipefail
-
-    cat > /opt/terraform-app.py <<'PYTHON'
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            body = b"Hello from Terraform!"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-    HTTPServer(("0.0.0.0", 80), Handler).serve_forever()
-    PYTHON
-
-    cat > /etc/systemd/system/terraform-app.service <<'SERVICE'
-    [Unit]
-    Description=Terraform demo web application
-    After=network.target
-
-    [Service]
-    Type=simple
-    ExecStart=/usr/bin/python3 /opt/terraform-app.py
-    Restart=always
-    RestartSec=3
-
-    [Install]
-    WantedBy=multi-user.target
-    SERVICE
-
-    systemctl daemon-reload
-    systemctl enable --now terraform-app.service
-  EOF
-  )
 
   tag_specifications {
     resource_type = "instance"

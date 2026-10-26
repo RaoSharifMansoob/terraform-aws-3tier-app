@@ -33,6 +33,16 @@ resource "aws_autoscaling_group" "app" {
     propagate_at_launch = true
   }
 
+  instance_refresh {
+    strategy = "Rolling"
+
+    preferences {
+      min_healthy_percentage = 50
+      max_healthy_percentage = 100
+      instance_warmup        = 180
+    }
+  }
+
   lifecycle {
     ignore_changes = [desired_capacity]
   }
