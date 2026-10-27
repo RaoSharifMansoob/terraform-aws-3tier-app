@@ -1,437 +1,451 @@
-# Terraform AWS 3-Tier Application Infrastructure
+# Terraform AWS 3-Tier Application
 
-A hands-on Infrastructure as Code (IaC) project that provisions a three-tier application infrastructure on Amazon Web Services (AWS) using Terraform.
+A secure, modular, and cost-conscious AWS 3-tier application infrastructure provisioned using Terraform. This project demonstrates Infrastructure as Code (IaC), reusable Terraform modules, environment separation, network security, load balancing, auto scaling, and remote state management.
 
-The project focuses on a simple, secure, cost-conscious, and modular design while demonstrating AWS networking, load balancing, EC2 Auto Scaling, RDS PostgreSQL, IAM, security groups, remote Terraform state, and code-quality checks.
-
-> **Project status:** The development environment has been deployed and tested. The Application Load Balancer returns HTTP 200, and the application targets are healthy. The demonstration web server does not yet connect to PostgreSQL. Production environment configuration is not yet implemented.
+Both **Dev and Prod environments are implemented and tested successfully**. They use the same reusable Terraform modules and infrastructure code, while environment-specific variables allow their configurations to be managed independently.
 
 ## Table of Contents
 
-- [1. Project Overview](#1-project-overview)
-- [2. Architecture](#2-architecture)
-- [3. AWS Resources](#3-aws-resources)
-- [4. Security Design](#4-security-design)
-- [5. Repository Structure](#5-repository-structure)
-- [6. Prerequisites](#6-prerequisites)
-- [7. AWS Authentication](#7-aws-authentication)
-- [8. Remote Terraform State](#8-remote-terraform-state)
-- [9. Deployment Guide](#9-deployment-guide)
-- [10. Verification and Testing](#10-verification-and-testing)
-- [11. Code Quality and Pre-Commit](#11-code-quality-and-pre-commit)
-- [12. Troubleshooting](#12-troubleshooting)
-- [13. Cost Considerations](#13-cost-considerations)
-- [14. Cleanup and Resource Destruction](#14-cleanup-and-resource-destruction)
-- [15. Limitations and Future Improvements](#15-limitations-and-future-improvements)
+- [Project Overview](#project-overview)
+- [Architecture](#architecture)
+- [AWS Infrastructure](#aws-infrastructure)
+- [Amazon Machine Image (AMI)](#amazon-machine-image-ami)
+- [Repository Structure](#repository-structure)
+- [Environment Management](#environment-management)
+- [Remote State Management](#remote-state-management)
+- [Security Design](#security-design)
+- [Prerequisites](#prerequisites)
+- [Deployment Guide](#deployment-guide)
+- [Verification](#verification)
+- [Pre-commit and Code Quality](#pre-commit-and-code-quality)
+- [Cost Considerations and Cleanup](#cost-considerations-and-cleanup)
+- [Current Limitations](#current-limitations)
+- [Future Improvements](#future-improvements)
 
----
+## Project Overview
 
-## 1. Project Overview
+The purpose of this project is to provision and manage a three-tier application infrastructure on AWS using Terraform.
 
-The project separates the infrastructure into three logical tiers:
+The infrastructure separates the public entry point, application instances, and database into distinct network tiers. Terraform modules provide reusable infrastructure components, while separate environment configurations allow Dev and Prod to use different CIDRs, instance configurations, capacity settings, and other parameters without duplicating the underlying infrastructure code.
 
-1. **Web tier:** An internet-facing Application Load Balancer (ALB) receives HTTP requests.
-2. **Application tier:** An EC2 Auto Scaling Group runs two EC2 instances in private application subnets.
-3. **Database tier:** Amazon RDS for PostgreSQL runs in private database subnets and accepts PostgreSQL traffic from the application security group.
+### Key Features
 
-The network spans two Availability Zones. The application instances are distributed across private subnets, while the ALB uses public subnets.
+- Modular Terraform architecture with reusable infrastructure components.
+- Separate Dev and Prod environment configurations.
+- Public Application Load Balancer (ALB).
+- Private EC2 instances managed by an Auto Scaling Group (ASG).
+- Private Amazon RDS for PostgreSQL.
+- Custom security groups with tier-to-tier access restrictions.
+- IAM instance roles and required IMDSv2 for EC2.
+- Encrypted EBS and RDS storage.
+- Amazon S3 remote state with versioning, encryption, and state locking.
+- Ephemeral database password generation using Terraform.
+- Pre-commit hooks for formatting and security checks.
+- Configurable instance sizes and Auto Scaling capacity.
 
-### Project objectives
+## Architecture
 
-- Provision AWS infrastructure using Terraform.
-- Organize infrastructure into reusable modules.
-- Keep environment-specific configuration separate from shared infrastructure code.
-- Apply least-privilege IAM and security-group rules.
-- Store application Terraform state in an encrypted, versioned S3 bucket.
-- Use S3 lockfiles for Terraform state locking.
-- Run formatting and secret-detection checks before commits.
-- Avoid unnecessary infrastructure costs, including NAT Gateway charges.
-
-## 2. Architecture
-
-### High-level architecture
+The infrastructure follows a three-tier architecture:
 
 ```text
-                        Internet
-                           |
-                           v
-                 +--------------------+
-                 | Application Load   |
-                 | Balancer (HTTP 80) |
-                 +---------+----------+
-                           |
-                +----------+----------+
-                |                     |
-                v                     v
-          +-----------+         +-----------+
-          | EC2 App 1 |         | EC2 App 2 |
-          | Private   |         | Private   |
-          | Subnet AZ1|         | Subnet AZ2|
-          +-----+-----+         +-----+-----+
-                |                     |
-                +----------+----------+
-                           |
-                           v
-                 +--------------------+
-                 |   RDS PostgreSQL   |
-                 |    Private DB      |
-                 +--------------------+
+                         Internet
+                            |
+                            v
+                  Application Load Balancer
+                       (Public Subnets)
+                            |
+                            v
+                    EC2 Auto Scaling Group
+                       (Private Subnets)
+                            |
+                            v
+                    Amazon RDS PostgreSQL
+                       (Private Subnets)
 ```
 
-The diagram represents the intended network and traffic flow. The current application is a demonstration HTTP server; it does not yet perform database queries.
+### Request Flow
 
-### Development network layout
+1. Users access the application through the public Application Load Balancer.
+2. The ALB forwards HTTP requests to healthy EC2 instances in the private application subnets.
+3. The application tier is configured to communicate with the database tier through restricted security group rules.
+4. RDS PostgreSQL is deployed in private database subnets and is not directly accessible from the internet.
 
-The development VPC uses the CIDR `10.0.0.0/16`.
+The Dev and Prod environments use the same architectural pattern but maintain separate environment configurations and Terraform state.
 
-| Tier | Subnet | CIDR |
-|---|---|---|
-| Public | `public_a` | `10.0.1.0/24` |
-| Public | `public_b` | `10.0.2.0/24` |
-| Application | `app_a` | `10.0.11.0/24` |
-| Application | `app_b` | `10.0.12.0/24` |
-| Database | `db_a` | `10.0.21.0/24` |
-| Database | `db_b` | `10.0.22.0/24` |
+## AWS Infrastructure
 
-The subnet labels are logical identifiers. AWS selects the actual Availability Zones through Terraform data sources.
-
-## 3. AWS Resources
-
-| Resource | Purpose |
+| Component | Purpose |
 |---|---|
-| Amazon VPC | Provides isolated network addressing. |
-| Six subnets | Separates public, application, and database tiers across two Availability Zones. |
-| Internet Gateway and route tables | Provide internet routing for public subnets. |
-| Security groups | Restrict traffic between the ALB, application, and database tiers. |
-| Application Load Balancer | Receives public HTTP requests. |
-| Target group and listener | Forward requests to EC2 targets and check application health. |
-| EC2 launch template | Defines the AMI, instance type, IAM profile, storage, metadata options, and user data. |
-| Auto Scaling Group | Maintains two application instances. |
-| IAM role and instance profile | Provide an EC2 identity without static AWS credentials. |
-| Amazon RDS for PostgreSQL | Provides a managed relational database. |
-| RDS DB subnet group | Places RDS in the private database subnets. |
-| Amazon S3 | Stores remote Terraform state separately from the application resources. |
+| Amazon VPC | Provides isolated networking for each environment. |
+| Public subnets | Host the Application Load Balancer. |
+| Private application subnets | Host EC2 instances managed by the ASG. |
+| Private database subnets | Host RDS PostgreSQL. |
+| Application Load Balancer | Distributes HTTP traffic across healthy application instances. |
+| EC2 Launch Template | Defines the AMI, instance type, storage, and instance settings. |
+| Auto Scaling Group | Maintains the configured instance capacity and replaces unhealthy instances. |
+| Amazon RDS PostgreSQL | Provides a managed relational database. |
+| IAM role and instance profile | Define the AWS permissions available to EC2 instances. |
+| Security groups | Control traffic between the ALB, application, and database tiers. |
+| Amazon S3 | Stores Terraform remote state separately for each environment. |
 
-### Main development configuration
+### Network Configuration
 
-| Setting | Value |
-|---|---|
-| AWS region | `us-east-1` |
-| EC2 instance type | `t3.micro` |
-| ASG desired/minimum/maximum | `2 / 2 / 2` |
-| Application port | TCP `80` |
-| Database engine | PostgreSQL 17 |
-| Database instance class | `db.t4g.micro` |
-| Database storage | 20 GB encrypted gp3 |
-| Database public accessibility | Disabled |
-| RDS Multi-AZ deployment | Disabled |
-| NAT Gateway | Not provisioned |
-| Application protocol | HTTP |
+The VPC and subnet CIDRs are configured through environment-specific variables.
 
-The AMI is selected using a Terraform data source, so the matching AMI may change as newer images become available.
-
-## 4. Security Design
-
-### Network isolation
-
-- The ALB is internet-facing and deployed in public subnets.
-- EC2 instances run in private application subnets.
-- RDS runs in private database subnets and is not publicly accessible.
-- The database security group accepts TCP `5432` only from the application security group.
-
-### Security-group traffic
-
-| Security group | Direction | Allowed traffic |
+| Setting | Dev | Prod |
 |---|---|---|
-| ALB | Inbound | TCP `80` from the internet |
-| ALB | Outbound | TCP `80` to the application security group |
-| Application | Inbound | TCP `80` from the ALB security group |
-| Application | Outbound | TCP `5432` to the database security group |
-| Database | Inbound | TCP `5432` from the application security group |
-| Database | Outbound | No explicitly configured outbound rules |
+| VPC CIDR | `10.0.0.0/16` | `10.1.0.0/16` |
+| Availability Zones | 2 | 2 |
+| Public subnets | Configurable | Configurable |
+| Private application subnets | Configurable | Configurable |
+| Private database subnets | Configurable | Configurable |
 
-The configuration uses explicit security-group rules rather than relying on the default allow-all egress rule.
+The separate VPC CIDRs prevent address-space overlap between these environments.
 
-### IAM and instance metadata
+### Compute Configuration
 
-- The EC2 role has no additional AWS service permissions because the demo web server does not need to call AWS APIs.
-- The launch template requires IMDSv2.
-- The Terraform execution role should receive only the permissions required to manage this project.
-- IAM permissions should not be expanded to administrator access simply to bypass individual access-denied errors.
+EC2 instance types and Auto Scaling capacity are configurable independently for each environment.
 
-### Storage and state protection
+For example, the following settings control the Auto Scaling Group capacity:
 
-- EC2 root volumes use encrypted gp3 storage.
-- RDS storage encryption is enabled.
-- The S3 state bucket has versioning, encryption, and S3 Block Public Access enabled.
-- The S3 backend uses `encrypt = true` and `use_lockfile = true`.
-- `.gitignore` excludes local Terraform working directories, state files, and real variable files.
-- Gitleaks runs as part of the pre-commit checks.
+- `min_size`: Minimum number of instances.
+- `desired_capacity`: Target number of instances.
+- `max_size`: Maximum number of instances.
+- `instance_type`: EC2 instance size.
+- `ami_id`: Image used to launch the instances.
 
-**Important:** Terraform state may contain sensitive values, including database credentials. Marking a variable as sensitive does not encrypt or remove its value from state. Restrict access to the state bucket and its object versions.
+These settings can be adjusted according to workload requirements, performance expectations, and budget. Production capacity should be selected based on workload testing and availability requirements rather than simply copying Dev settings.
 
-### Current security limitations
+### Database Configuration
 
-This is a learning project, not a production-ready application. It currently uses HTTP rather than HTTPS and does not include a domain, TLS certificate, production application stack, or complete monitoring and alerting.
+The project uses Amazon RDS for PostgreSQL with the following configuration options:
 
-## 5. Repository Structure
+- Database engine and version.
+- Database instance class.
+- Allocated storage and storage type.
+- Storage encryption.
+- Backup retention.
+- Database name and username.
+- Private subnet placement.
+- Security group restrictions.
+
+These settings are managed through Terraform variables and environment configuration.
+
+## Amazon Machine Image (AMI)
+
+An **Amazon Machine Image (AMI)** is a template used to launch EC2 instances. It defines the operating system and can include pre-installed software, configurations, and other components required by an application.
+
+### Why Use an AMI?
+
+- **Consistent deployments:** Instances launched by an Auto Scaling Group use a defined base image and configuration.
+- **Faster provisioning:** Pre-installed software reduces the work required during instance startup.
+- **Simplified scaling and recovery:** New instances can be launched with the required software when capacity increases or unhealthy instances are replaced.
+- **Controlled environments:** A deliberately selected image provides a consistent foundation for security updates, maintenance, and application deployment.
+
+### How the AMI Is Used in This Project
+
+The AMI ID is supplied to the EC2 Launch Template. The Auto Scaling Group uses that template to launch EC2 instances in the private application subnets.
+
+This project uses an image based on **Amazon Linux 2023 Minimal, x86-64**, with Nginx installed and enabled to serve a demonstration web page.
+
+### AMI Selection Guidelines
+
+When selecting an AMI:
+
+- Choose an operating system that is supported and appropriate for the application.
+- Verify the image publisher, architecture, and regional availability.
+- Consider security updates, required packages, and application compatibility.
+- Prefer a deliberately selected and tested image for repeatable deployments.
+- Update the selected image through a controlled process when security patches or newer versions are needed.
+
+AMI IDs are region-specific. The AMI selected for one AWS Region might not be available in another. Dev and Prod can use the same tested AMI or different image versions when their requirements justify it.
+
+## Repository Structure
 
 ```text
 terraform-aws-3tier-app/
 ├── bootstrap/
-│   ├── main.tf
-│   ├── provider.tf
-│   ├── variables.tf
-│   ├── versions.tf
-│   └── terraform.tfvars.example
+│   └── # Terraform configuration for bootstrapping remote state
+│
 ├── environments/
-│   └── dev/
+│   ├── dev/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   ├── terraform.tfvars
+│   │   ├── terraform.tfvars.example
+│   │   ├── outputs.tf
+│   │   └── versions.tf
+│   │
+│   └── prod/
 │       ├── main.tf
-│       ├── outputs.tf
-│       ├── provider.tf
 │       ├── variables.tf
-│       ├── versions.tf
+│       ├── terraform.tfvars
 │       ├── terraform.tfvars.example
-│       └── .terraform.lock.hcl
+│       ├── outputs.tf
+│       └── versions.tf
+│
 ├── modules/
 │   ├── networking/
 │   ├── security/
 │   ├── load_balancer/
 │   ├── compute/
 │   └── database/
-├── .gitignore
+│
 ├── .pre-commit-config.yaml
+├── .gitignore
 └── README.md
 ```
 
-The directory tree lists the important tracked configuration files, not generated files or local-only files.
+The structure above describes the logical organization of the project. Each module contains the Terraform files required for its specific infrastructure component.
 
-### Directory responsibilities
+**Note:** `terraform.tfvars` files containing local environment values should remain untracked. Use the corresponding example files as templates.
 
-| Directory or file | Responsibility |
+## Environment Management
+
+The project uses separate root configurations for Dev and Prod while sharing the same Terraform modules.
+
+### How It Works
+
+- Each environment has its own root Terraform configuration.
+- Both environments call the same reusable modules.
+- Environment-specific variable values determine CIDRs, resource names, instance types, capacity, database settings, and other configuration.
+- Each environment has a separate remote-state key in the same S3 bucket.
+
+This approach avoids duplicating the infrastructure implementation and makes it easier to maintain consistent security and architectural practices.
+
+### Customizing an Environment
+
+To change an environment's configuration, update the relevant values in its `terraform.tfvars` file or the appropriate variable defaults.
+
+Examples include:
+
+- Changing the VPC and subnet CIDRs.
+- Selecting a different EC2 instance type.
+- Adjusting the ASG minimum, desired, and maximum capacities.
+- Selecting a different AMI.
+- Changing the RDS instance class or storage configuration.
+
+Always review the Terraform plan before applying changes, particularly when changing production resources. Some changes may cause resource replacement, downtime, or data loss.
+
+## Remote State Management
+
+Terraform state is stored remotely in Amazon S3. Both environments use the same state bucket but have different state keys.
+
+| Environment | S3 state key |
 |---|---|
-| `bootstrap/` | Creates the S3 bucket used for remote Terraform state. |
-| `environments/dev/` | Configures and deploys the development environment. |
-| `modules/networking/` | Defines the VPC, subnets, Internet Gateway, and route tables. |
-| `modules/security/` | Defines tier-specific security groups and their rules. |
-| `modules/load_balancer/` | Defines the ALB, listener, target group, and health checks. |
-| `modules/compute/` | Defines the EC2 launch template, IAM role/profile, and Auto Scaling Group. |
-| `modules/database/` | Defines RDS PostgreSQL and its subnet group. |
-| `.gitignore` | Excludes local files, state, and sensitive configuration. |
-| `.pre-commit-config.yaml` | Defines local formatting and security checks. |
+| Dev | `terraform-aws-3tier-app/dev/terraform.tfstate` |
+| Prod | `terraform-aws-3tier-app/prod/terraform.tfstate` |
 
-The `environments/prod/` directory is not configured for deployment yet. Production resources, variables, and state should be added deliberately in a future iteration.
+The S3 bucket is configured with:
 
-## 6. Prerequisites
+- Versioning to help recover previous state versions.
+- Server-side encryption.
+- S3 Block Public Access.
+- Terraform state locking using `use_lockfile = true`.
 
-Install the following tools:
+### Why Separate State Keys?
+
+Separate state keys ensure that Terraform tracks Dev and Prod resources independently. Operations in one environment should not inadvertently manage the resources tracked by the other environment's state.
+
+Although the state is stored in the same bucket, **each environment must be initialized and operated on from its own directory**.
+
+Remote state may contain sensitive infrastructure information. Restrict access to the S3 bucket and its state objects through appropriate IAM permissions.
+
+## Security Design
+
+Security is incorporated into the infrastructure through network isolation, access restrictions, encryption, and credential handling.
+
+### Network Security
+
+- The ALB is deployed in public subnets.
+- EC2 application instances are deployed in private subnets.
+- RDS is deployed in private database subnets.
+- The application security group allows inbound HTTP traffic from the ALB security group.
+- The database security group allows PostgreSQL traffic only from the application security group.
+- The database is not publicly accessible.
+
+### Compute Security
+
+- EC2 instances use an IAM instance role and instance profile.
+- IMDSv2 is required.
+- EBS root volumes are encrypted.
+- The Launch Template provides a consistent instance configuration.
+- Access should follow the principle of least privilege.
+
+### Database Security
+
+- RDS storage is encrypted.
+- Database traffic is restricted through security groups.
+- The database is deployed in private subnets.
+- Backup retention and deletion behavior are configurable.
+
+### Database Password Handling
+
+The project uses Terraform's ephemeral `random_password` resource and the AWS provider's write-only `password_wo` argument to avoid persisting the generated database password in Terraform state.
+
+The password rotation version is controlled using `password_wo_version`. Increment this value when intentionally requesting a password update through Terraform.
+
+**Important:** An ephemeral password is not a persistent secret store. The generated password is not available for later retrieval from Terraform state. A real application that needs to authenticate to the database requires an appropriate secure mechanism for delivering and managing database credentials. Production deployments should implement a deliberate secret lifecycle and recovery strategy.
+
+### Terraform and Repository Security
+
+- Sensitive values should not be committed to Git.
+- `.gitignore` excludes local variable files and other generated or sensitive artifacts as appropriate.
+- Gitleaks checks for potential hardcoded secrets.
+- Terraform formatting and configuration checks run through pre-commit hooks.
+- AWS access should use an appropriately scoped identity rather than routine root-account access.
+
+## Prerequisites
+
+Install the following tools before deploying the project:
 
 - [Terraform](https://developer.hashicorp.com/terraform/install)
 - [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
 - [Git](https://git-scm.com/downloads)
-- Python and the Python Launcher on Windows
-- The Python `pre-commit` package
+- [Python](https://www.python.org/downloads/)
+- [pre-commit](https://pre-commit.com/)
 
-Verify the installation in PowerShell:
+The project was developed and tested using Terraform 1.16.6, AWS provider 6.69.1, and Random provider 3.7.2. The Terraform provider versions are declared in the environment configuration.
 
-```powershell
-terraform version
-aws --version
-git --version
-py --version
-py -m pre_commit --version
-```
+You also need an AWS identity with sufficient permissions to create the resources used by the selected environment and access the remote-state bucket.
 
-Use a Terraform version compatible with the project's version constraints and preserve the committed provider lockfile.
+## Deployment Guide
 
-You also need an AWS account, an IAM identity with appropriately scoped permissions, and a remote-state S3 bucket before initializing the development environment.
-
-## 7. AWS Authentication
-
-The original development workflow uses these AWS CLI profiles:
-
-- `terraform-dev` — authenticates the IAM user.
-- `terraform-project1` — assumes the dedicated `TerraformProject1Role`.
-
-These profile names are specific to the original local setup. Configure equivalent profiles for your own AWS account.
-
-### Authenticate
-
-```powershell
-aws login --profile terraform-dev
-```
-
-Verify the identity used for Terraform:
-
-```powershell
-aws sts get-caller-identity --profile terraform-project1
-```
-
-Confirm the AWS account and role before making infrastructure changes.
-
-The Terraform provider and S3 backend are configured to use the `terraform-project1` profile. If your local AWS configuration differs, update the profile configuration consistently before proceeding.
-
-Do not hardcode AWS access keys in Terraform files. Never commit credentials, secret-bearing terminal exports, real `.tfvars` files, or Terraform state.
-
-## 8. Remote Terraform State
-
-The development environment stores its state remotely in Amazon S3.
-
-| Setting | Value |
-|---|---|
-| Bucket | `terraform-aws-3tier-app-state-949049116271` |
-| Region | `us-east-1` |
-| Development state key | `terraform-aws-3tier-app/dev/terraform.tfstate` |
-| Encryption | Enabled |
-| Bucket versioning | Enabled |
-| S3 Block Public Access | Enabled |
-| State locking | S3 lockfile |
-
-The bucket name is specific to the original AWS account. If deploying to another account, use a globally unique bucket name owned by that account and update the backend configuration accordingly.
-
-### Why remote state?
-
-Remote state centralizes Terraform's resource mapping and metadata. Versioning helps recover previous state versions, and S3 lockfiles help prevent concurrent Terraform operations from modifying the same state simultaneously.
-
-These controls do not replace restrictive IAM permissions and appropriate bucket policies.
-
-### Bootstrap configuration
-
-The `bootstrap/` directory creates the S3 bucket and its foundational security settings.
-
-Bootstrap is separate from the application environment. It may use its own local state file, so keep its state and configuration separate from the development environment's remote state.
-
-If the state bucket already exists, do not attempt to recreate it. Before using bootstrap for a new account, review its variables, initialize it from the `bootstrap/` directory, inspect the plan, and apply only after confirming the bucket configuration.
-
-**Do not destroy or delete the state bucket while an active Terraform backend depends on it.**
-
-## 9. Deployment Guide
-
-The following instructions deploy the configured development environment.
-
-### Step 1: Clone the repository
+### 1. Clone the Repository
 
 ```powershell
 git clone https://github.com/RaoSharifMansoob/terraform-aws-3tier-app.git
-Set-Location terraform-aws-3tier-app
+cd terraform-aws-3tier-app
 ```
 
-### Step 2: Configure development variables
+### 2. Configure AWS Authentication
 
-```powershell
-Copy-Item environments\dev\terraform.tfvars.example environments\dev\terraform.tfvars
-```
+Authenticate using the AWS CLI profile configured for your project.
 
-Edit `environments\dev\terraform.tfvars` and supply the values required by the configuration. Use a strong database password and never commit the real variable file.
-
-The example file should contain safe placeholder values only.
-
-### Step 3: Authenticate to AWS
+For example, if using AWS CLI login:
 
 ```powershell
 aws login --profile terraform-dev
+```
+
+Verify the AWS identity and account associated with the profile used for deployment:
+
+```powershell
 aws sts get-caller-identity --profile terraform-project1
 ```
 
-Verify that the expected account and role are active.
+Use the profile that is configured and authorized for your selected environment. Ensure its credentials are valid before running Terraform.
 
-### Step 4: Initialize the development environment
+### 3. Configure Environment Variables
+
+Choose the environment you want to deploy.
+
+For Dev:
 
 ```powershell
-Set-Location environments\dev
+cd environments/dev
+```
+
+For Prod, start from the repository root and run:
+
+```powershell
+cd environments/prod
+```
+
+Create the local `terraform.tfvars` file using the environment's example file if it does not already exist. Configure the required values for the selected environment.
+
+Review the VPC and subnet CIDRs, AMI, EC2 instance type, ASG capacity, database settings, and other resource parameters before proceeding.
+
+### 4. Initialize Terraform
+
+Run the following from the selected environment directory:
+
+```powershell
 terraform init
 ```
 
-Run Terraform commands from `environments\dev`, not from the repository root. This ensures Terraform uses the correct provider configuration, backend key, variables, and module references.
+Terraform initializes the required providers and configures the S3 backend using that environment's state key.
 
-### Step 5: Validate the configuration
+If the backend configuration has changed, follow Terraform's documented backend migration or reconfiguration procedure rather than changing state paths casually.
+
+### 5. Format and Validate
 
 ```powershell
-terraform fmt -check -recursive
+terraform fmt -recursive
 terraform validate
 ```
 
-If you change files, format them before validating again.
-
-### Step 6: Review the execution plan
+### 6. Review the Plan
 
 ```powershell
-terraform plan
+terraform plan -out=tfplan
 ```
 
-Review all proposed changes. Confirm the AWS account, region, instance sizes, database configuration, and estimated cost before applying.
+Inspect the plan carefully to confirm that Terraform will create, update, or replace only the intended resources in the selected environment.
 
-### Step 7: Apply the configuration
+### 7. Apply the Configuration
 
 ```powershell
-terraform apply
+terraform apply tfplan
 ```
 
-Review the final plan and confirm the operation when prompted. Avoid automatic approval until you understand the proposed changes.
+Apply only after reviewing the plan and confirming that the expected AWS resources and costs are acceptable.
 
-### Step 8: Retrieve outputs
+### 8. Retrieve Outputs
+
+Review the configured outputs:
 
 ```powershell
 terraform output
 ```
 
-The configured outputs include the ALB URL, VPC ID, Auto Scaling Group name, and RDS connection information.
-
-The RDS endpoint is an address, not a database password. Its availability does not mean that RDS is publicly accessible.
-
-## 10. Verification and Testing
-
-### Check Terraform configuration and drift
-
-From `environments/dev/`:
-
-```powershell
-terraform validate
-terraform plan
-```
-
-After a successful deployment, a no-change plan is expected if the actual AWS infrastructure matches the configuration and no out-of-band changes have occurred.
-
-### Test the ALB
-
-Retrieve the application URL:
+If the environment exposes an ALB URL output, retrieve it with:
 
 ```powershell
 terraform output -raw alb_url
 ```
 
-Send a request:
+The output name depends on the outputs defined in the selected environment.
+
+Repeat the workflow from the other environment directory when you need to manage the other environment. Never assume that running Terraform in one directory automatically manages both environments.
+
+## Verification
+
+After deployment, verify that the infrastructure is functioning as expected.
+
+### Application Access
+
+If the environment exposes the ALB URL:
 
 ```powershell
 $url = terraform output -raw alb_url
-Invoke-WebRequest -Uri $url -UseBasicParsing
+Invoke-WebRequest -Uri $url
 ```
 
-The demonstration application should return HTTP `200 OK` with:
+A successful HTTP response indicates that the endpoint is reachable. For the current demonstration application, the response should contain the configured test page.
 
-```text
-Hello from Terraform!
-```
+### Additional Checks
 
-### Check target health
+Verify that:
 
-If targets are unhealthy, inspect the target group health status, instance lifecycle, application logs, user-data execution, and security-group rules.
+- The ALB target group reports the expected targets as healthy.
+- The ASG has the intended minimum, desired, and maximum capacity.
+- EC2 instances are launched in private application subnets.
+- RDS is private and its security group permits access only from the application tier.
+- The selected resources and network settings match the environment configuration.
+- Dev and Prod state keys remain separate.
 
-The ALB must be able to reach the application instances on TCP port `80`. The application instances must listen on that port and allow inbound traffic from the ALB security group.
+## Pre-commit and Code Quality
 
-### Database verification
+The repository uses pre-commit hooks to help maintain consistent Terraform code and identify common issues.
 
-RDS is provisioned in private subnets, and the database security group permits PostgreSQL traffic from the application security group. However, the current demonstration server does not connect to or query the database. Database connectivity and authentication must be tested separately when application-to-database integration is implemented.
+The configured checks include:
 
-## 11. Code Quality and Pre-Commit
-
-The repository uses pre-commit hooks for basic quality and security checks, including:
-
-- YAML validation
-- End-of-file newline checks
-- Trailing-whitespace checks
-- Terraform formatting
-- Gitleaks secret detection
+- YAML validation.
+- End-of-file formatting.
+- Trailing whitespace removal.
+- Terraform formatting.
+- Gitleaks secret detection.
 
 Install the hooks from the repository root:
 
@@ -439,141 +453,70 @@ Install the hooks from the repository root:
 py -m pre_commit install
 ```
 
-Run all checks before committing:
+Run all configured hooks manually:
 
 ```powershell
 py -m pre_commit run --all-files
 ```
 
-Run this command from the repository root so the hooks can inspect the full repository.
+If a hook modifies a file, review the changes and stage the corrected files before committing.
 
-Terraform commands do not automatically run pre-commit hooks. The hooks run when Git invokes the configured pre-commit hook, or when you execute them manually.
+## Cost Considerations and Cleanup
 
-If a hook modifies a file, review and stage the changes before committing.
+AWS resources may incur charges even when the application receives no traffic. Costs can come from the ALB, EC2 instances, RDS, storage, backups, and related services.
 
-## 12. Troubleshooting
+This project avoids NAT gateways to reduce costs, but the resulting network design limits outbound internet access from private instances unless an alternative egress mechanism is configured.
 
-### Terraform cannot authenticate to AWS
+Before deploying, review the pricing of the selected resources and the capacity configured for each environment.
 
-Refresh the login session and verify the assumed identity:
+### Destroy an Environment
 
-```powershell
-aws login --profile terraform-dev
-aws sts get-caller-identity --profile terraform-project1
-```
-
-Confirm that the Terraform provider and backend use the expected profile.
-
-### Access denied during apply
-
-Review the denied action and resource ARN. Grant only the narrowly scoped permissions required for the operation. Avoid broad administrator permissions as a workaround.
-
-### ALB returns 502 or 504, or targets are unhealthy
-
-Check:
-
-- Target group health status and reason.
-- EC2 instance lifecycle and Auto Scaling health.
-- ALB and application security-group ingress and egress rules.
-- Whether the application is listening on port `80`.
-- Whether user data completed successfully.
-- Whether the correct target group and security groups are attached.
-
-Private application subnets do not have NAT-based internet access. Startup scripts that download operating-system packages may fail unless the necessary network path or package source is available.
-
-### Terraform reports provider or memory errors
-
-Close unnecessary applications, retry after reducing memory pressure, and preserve the committed provider lockfile unless there is a deliberate reason to change provider versions.
-
-### Pre-commit modifies files
-
-```powershell
-py -m pre_commit run --all-files
-git status
-git add .
-```
-
-Review the changes before committing.
-
-### Terraform proposes unexpected changes
-
-Do not apply immediately. Check the active directory, backend, AWS account, region, variables, state, and resource configuration. Review the plan before taking action.
-
-## 13. Cost Considerations
-
-This is a learning environment, not a zero-cost deployment.
-
-Potential charges include:
-
-- Application Load Balancer hourly and capacity-related usage.
-- Two running EC2 instances and their EBS volumes.
-- RDS instance-hours and allocated database storage.
-- S3 storage, requests, and stored object versions.
-- Data transfer and other AWS services enabled later.
-
-The configuration avoids a NAT Gateway and uses small instance sizes to reduce costs. RDS is not Multi-AZ, and the Auto Scaling Group is configured to maintain two instances.
-
-Actual costs depend on region, usage, current pricing, and applicable AWS free-tier eligibility. Review the [AWS Pricing Calculator](https://calculator.aws/) before deployment and monitor AWS billing.
-
-**Important:** Resources continue to incur charges while they exist, even when the application is not being tested.
-
-## 14. Cleanup and Resource Destruction
-
-Destroy the development infrastructure only when you no longer need it.
-
-### Step 1: Confirm the environment and AWS identity
-
-```powershell
-aws sts get-caller-identity --profile terraform-project1
-Set-Location environments\dev
-```
-
-Confirm that you are targeting the correct account and development state.
-
-### Step 2: Review the destruction plan
+If an environment is no longer needed, change to its directory and review the destruction plan:
 
 ```powershell
 terraform plan -destroy
 ```
 
-Inspect the resources Terraform proposes to delete. Ensure that the plan targets only the infrastructure you intend to remove.
-
-### Step 3: Destroy the development infrastructure
+If you are certain that the resources can be removed, destroy the environment:
 
 ```powershell
 terraform destroy
 ```
 
-Review the plan and confirm the operation when prompted.
+Run these commands from the specific environment directory you intend to remove. Destroying an environment can permanently remove resources and data, so verify the selected environment and database retention requirements first.
 
-Destroying the application infrastructure is potentially irreversible. Back up any database data you need before deleting RDS, and verify the configured snapshot and deletion behavior before confirming.
+Do not delete the shared S3 state bucket as part of routine environment cleanup. It contains state for both environments and may also contain state versions needed for recovery.
 
-### Step 4: Preserve the remote-state backend
+## Current Limitations
 
-The S3 state bucket is managed separately through the bootstrap configuration. Do not destroy it as part of ordinary application cleanup.
+- The application is currently a demonstration web page rather than a complete database-backed application.
+- The ALB serves HTTP; HTTPS and certificate management have not been implemented.
+- NAT gateways and VPC endpoints are not configured.
+- The ephemeral database password approach does not provide persistent credential retrieval or delivery to an application.
+- Production monitoring, alerting, centralized logging, and a full CI/CD pipeline remain potential improvements.
+- Production readiness requires workload testing, backup and recovery validation, capacity planning, and appropriate operational controls.
 
-Keep the bucket while any Terraform state depends on it. If you eventually remove the backend, first plan a deliberate state archival or migration procedure.
+## Future Improvements
 
-## 15. Limitations and Future Improvements
+Potential enhancements include:
 
-The current scope prioritizes a straightforward, understandable infrastructure foundation.
+- Configure HTTPS using AWS Certificate Manager.
+- Implement a secure, persistent database secret-management and rotation strategy.
+- Connect a real application to PostgreSQL.
+- Add CloudWatch monitoring, alarms, and centralized logging.
+- Introduce automated Terraform plan checks and controlled deployment workflows.
+- Improve outbound connectivity through an appropriate, cost-reviewed network design.
+- Add tested backup restoration and disaster recovery procedures.
+- Adopt controlled AMI updates and vulnerability scanning.
+- Review production capacity, availability, and security requirements before handling real workloads.
 
-Potential future improvements include:
+## Project Principles
 
-- HTTPS using AWS Certificate Manager and an appropriate domain.
-- A real application server and deployment pipeline.
-- Application-to-RDS connectivity and integration tests.
-- Additional monitoring, logging, alarms, and dashboards.
-- Automated Terraform and security checks in CI/CD.
-- Managed application secrets.
-- A deliberate database backup and recovery strategy.
-- NAT Gateway or selected VPC endpoints if future requirements need outbound connectivity.
-- A separately configured production environment with its own state and variables.
+This project focuses on:
 
-These are future improvements, not features the current configuration claims to have implemented.
-
----
-
-Contributions and suggestions are welcome. Make focused changes, run the repository's pre-commit checks, validate Terraform from the relevant environment directory, and review the plan before applying infrastructure changes.
-
-Never commit AWS credentials, database passwords, real `.tfvars` files, Terraform state, or other sensitive information.
+- **Infrastructure as Code:** Manage infrastructure through version-controlled Terraform.
+- **Reusability:** Share modules between environments rather than duplicate resource definitions.
+- **Environment separation:** Maintain distinct configurations and state for Dev and Prod.
+- **Security by design:** Restrict network access, encrypt storage, and apply least privilege.
+- **Cost awareness:** Make infrastructure choices with cost and operational requirements in mind.
+- **Repeatability:** Use explicit configuration and validation to make deployments easier to understand and reproduce.
