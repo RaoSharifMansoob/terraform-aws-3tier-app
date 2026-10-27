@@ -24,10 +24,11 @@ resource "aws_db_instance" "postgres" {
   engine_version = data.aws_rds_engine_version.postgres.version
   instance_class = var.db_instance_class
 
-  db_name  = var.db_name
-  username = var.db_username
-  password = var.db_password
-  port     = 5432
+  db_name             = var.db_name
+  username            = var.db_username
+  password_wo         = ephemeral.random_password.db_password.result
+  password_wo_version = 1
+  port                = 5432
 
   allocated_storage     = var.db_allocated_storage
   max_allocated_storage = var.db_allocated_storage

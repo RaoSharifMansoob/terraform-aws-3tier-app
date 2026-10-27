@@ -76,12 +76,6 @@ variable "db_username" {
   default     = "appadmin"
 }
 
-variable "db_password" {
-  description = "PostgreSQL master password."
-  type        = string
-  sensitive   = true
-}
-
 variable "db_instance_class" {
   description = "RDS instance class."
   type        = string

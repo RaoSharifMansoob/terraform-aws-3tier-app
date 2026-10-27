@@ -48,7 +48,6 @@ module "database" {
 
   db_name                 = var.db_name
   db_username             = var.db_username
-  db_password             = var.db_password
   db_instance_class       = var.db_instance_class
   db_allocated_storage    = var.db_allocated_storage
   backup_retention_period = var.backup_retention_period
